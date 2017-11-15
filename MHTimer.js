@@ -13,12 +13,14 @@ const client = new Discord.Client();
 var main_settings_filename = 'settings.json';
 var timer_settings_filename = 'timer_settings.json';
 var reminder_filename = 'reminders.json';
+var stats_filename = 'stats.json'; //This has to move to a database if these ever become really good stats.
 
 var timers_list = [];
 var reminders = [];
 var file_encoding = 'utf8';
 var settings = {};
 var mice = [];
+var stats = {};
 
 //Only support announcing in 1 channel
 var announce_channel;
@@ -66,6 +68,9 @@ process.on('uncaughtException', function (exception) {
 function Main() {
     // Load global settings
     var a = new Promise(loadSettings);
+    
+    //Load stats
+    a.then(loadStats);
 
     // Bot log in
     a.then(() => { client.login(settings.token); });
@@ -98,8 +103,8 @@ function Main() {
     // Message event router
     a.then(() => {
         client.on('message', message => {
-            if (message.content.startsWith('-mh ')) {
-//                console.log(message.channel.type);
+            if (message.content.startsWith('-mh')) {
+                console.log(message.channel.type);
                 messageParse(message);
             }
         });
@@ -174,8 +179,9 @@ function messageParse(message) {
     var command = tokens.shift();
     var timerName; // This has area and sub_area possibly defined
     if (typeof command === 'undefined') {
-        message.channel.send("I didn't understand. I know 'next' and 'remind'");
-        return;
+        command = "help";
+//        message.channel.send("I didn't understand, try help");
+//        return;
     } else {
         if (tokens.length >= 1) {
             timerName = timerAliases(tokens);
@@ -233,11 +239,13 @@ function messageParse(message) {
         case 'find':
             if (tokens.length == 0) {
                 message.channel.send("You have to supply mice to find");
+                stats.find.empty = ++stats.find.empty || 1;
             }
             else {
                 var searchStr = tokens.join(" ").trim().toLowerCase().replace(/ mouse$/,'');
                 if (searchStr.length < 3) {
                     message.channel.send("Your search string was too short, try again");
+                    stats.find.short = ++stats.find.short || 1;
                 } else {
                     findMouse(message.channel, searchStr);
                 }
@@ -247,14 +255,17 @@ function messageParse(message) {
         case 'help':
         case 'arrg':
         default:
+            stats.help.call = ++stats.help.call || 1;
             if (tokens.length > 0) {
                 if (tokens[0] === 'next') {
+                    stats.help.next = ++stats.help.next || 1;
                     usage_str = "Usage: `-mh next [area/sub-area]` will provide a message about the next related occurrence.\n";
                     usage_str += "Areas are Seasonal Garden (**sg**), Forbidden Grove (**fg**), Toxic Spill (**ts**), Balack's Cove (**cove**), and the daily **reset**.\n"; 
                     usage_str += "Sub areas are the seasons, open/close, spill ranks, and tide levels\n";
                     usage_str += "Example: `-mh next fall` will tell when it is Autumn in the Seasonal Garden."
                 }
                 else if (tokens[0] === 'remind') {
+                    stats.help.remind = ++stats.help.remind || 1;
                     usage_str = "Usage: `-mh remind [area/sub-area] [<number>/always/stop]` will control my reminder function relating to you specifically.\n";
                     usage_str += "Using the word `stop` will turn off a reminder if it exists.\n";
                     usage_str += "Using a number means I will remind you that many times for that timer.\n";
@@ -265,17 +276,20 @@ function messageParse(message) {
                     usage_str += "Example: `-mh remind close always` will always PM you 15 minutes before the Forbidden Grove closes.\n";
                 }
                 else if (tokens[0].substring(0,5) === 'sched') {
+                    stats.help.sched = ++stats.help.sched || 1;
                     usage_str = "Usage: `-mh schedule [<area>] [<number>]` will tell you the timers scheduled for the next `<number>` of hours. Default is 24, max is 240.\n";
                     usage_str += "If you provide an area I will only report on that area.";
                 }
                 else if (tokens[0] === 'find') {
+                    stats.help.find = ++stats.help.find || 1;
                     usage_str = "Usage `-mh find <mouse>` will print the top attractions for the mouse, capped at 10.\n";
                     usage_str += "All attraction data is from <https://mhhunthelper.agiletravels.com/>.\n";
                     usage_str += "Help populate the database for better information!";
                 }
                 else {
                     //TODO: Update this with schedule
-                    usage_str = "I can only provide help for `remind`, `next`, and `schedule`";
+                    stats.help.none = ++stats.help.none || 1;
+                    usage_str = "I can only provide help for `remind`, `next`, `find`, and `schedule`";
                 }
             } else {
                 //TODO: Update this with schedule
@@ -898,6 +912,7 @@ function findMouse(channel, args) {
             mouseID = mice[i].id;
             mouseName = mice[i].value;
             url = url + mouseID;
+            stats.find.good_mouse = ++stats.find.good_mouse || 1;
 //            console.log("Lookup: " + url);
             request( {
                 url: url,
@@ -921,6 +936,7 @@ function findMouse(channel, args) {
                         }
                     }
                 } else {
+                    stats.find.good_mouse_bad = ++stats.find.good_mouse_bad || 1;
                     console.log("Lookup failed for some reason", error, response, body);
                     retStr = "Could not process results for '" + args + "', AKA " + mouseName;
                     channel.send(retStr);
@@ -960,6 +976,7 @@ function findMouse(channel, args) {
                     retStr = mouseName + " can be found the following ways:\n```\n" + retStr + "\n```\n";
                     retStr += "HTML version at: <https://mhhunthelper.agiletravels.com/?mouse=" + mouseID + ">";
                 } else {
+                    stats.find.good_mouse_no_res = ++stats.find.good_mouse_no_res || 1;
                     retStr = mouseName + " either hasn't been seen enough or something broke";
                 }
                 channel.send(retStr);
@@ -968,9 +985,33 @@ function findMouse(channel, args) {
         }
     }
     if (!found) {
+        stats.find.no_mouse = ++stats.find.no_mouse || 1;
 //        console.log("Nothing found for '", args, "'");
         channel.send(retStr);
     }
+}
+
+function loadStats() {
+    fs.readFile(stats_filename, file_encoding, (err, data) => {
+        if (err) {
+            console.log(err);
+            reject();
+            return;
+        }
+        stats = JSON.parse(data);
+        stats.last_loaded = Date.now();
+    });
+}
+
+function saveStats() {
+    //Write out the JSON of the stats object array
+    fs.writeFile(stats_filename, JSON.stringify(stats, null, 1), file_encoding, (err) => {
+        if (err) { 
+            reject();
+            return console.log(err);
+        }
+    });
+//    console.log("Reminders saved: " + reminders.length);
 }
 
 //Resources:
